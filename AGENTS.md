@@ -7,7 +7,7 @@
 - Translate Visual Studio `ExtensionDir`, `ArchivePrefix`, and `ArchiveTarget` metadata in `msvcup.go`; pass generic destinations and prefixes to `archives.go`.
 - Build with `CGO_ENABLED=0` for Windows amd64 and Linux amd64.
 - Keep build orchestration in `build.sh`. The GitHub workflow must invoke it rather than duplicate its toolchain or compiler commands.
-- Linux lists, resolves, downloads, and extracts Windows toolchains. Do not generate Bash environment scripts or try to execute Microsoft binaries on Linux.
+- Linux lists, downloads, and extracts Windows toolchains. Do not generate Bash environment scripts or try to execute Microsoft binaries on Linux.
 - Never invoke `msiexec`, Wine, 7-Zip, downloaded installers, or platform-specific extraction DLLs.
 - Do not add WiX Burn bootstrapper parsing to the SDK/WDK resolution path.
 - Use only the currently approved archive dependencies. Do not add a dependency without explicit approval.
@@ -39,7 +39,7 @@
 - Never silently ignore required dependencies, corrupt archives, unsafe paths, or failed hash checks.
 - Payload mismatches may be accepted only through the explicit install option and must emit the observed hash.
 - Resolve all wildcard exclusions before creating a destination or downloading payloads.
-- Use concurrency only for independent downloads. Keep filesystem installation deterministic and sequential.
+- Keep downloads and filesystem installation deterministic and sequential unless measured throughput justifies independent download workers.
 
 ## Verification
 
