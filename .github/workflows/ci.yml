@@ -23,5 +23,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_SHA:0:12}"
-          gh release create "$tag" ./bin/msvcup-linux-amd64 ./bin/msvcup-windows-amd64.exe --target "$GITHUB_SHA" --generate-notes ||
-          gh release upload "$tag" ./bin/msvcup-linux-amd64 ./bin/msvcup-windows-amd64.exe --clobber
+          gh release create "$tag" ./bin/msvcup ./bin/msvcup.exe --target "$GITHUB_SHA" --generate-notes ||
+          gh release upload "$tag" ./bin/msvcup ./bin/msvcup.exe --clobber

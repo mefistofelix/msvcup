@@ -49,7 +49,7 @@ export GOTOOLCHAIN=local
 
 "$go_command" -C "$script_dir/src" test ./...
 "$go_command" -C "$script_dir/src" vet ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$go_command" -C "$script_dir/src" build -trimpath -ldflags="-s -w" -o "$script_dir/bin/msvcup-linux-amd64" .
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "$go_command" -C "$script_dir/src" build -trimpath -ldflags="-s -w" -o "$script_dir/bin/msvcup-windows-amd64.exe" .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$go_command" -C "$script_dir/src" build -trimpath -ldflags="-s -w" -o "$script_dir/bin/msvcup" .
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "$go_command" -C "$script_dir/src" build -trimpath -ldflags="-s -w" -o "$script_dir/bin/msvcup.exe" .
 
 echo "done"
