@@ -1,0 +1,10 @@
+github.com/ArchangelX360/winarchive-tools v0.0.2-0.20260325194630-222d2c225724 h1:plbOKYPBPF/cC7aDBlcO/Iq3W1Guv/gF494HrV2menY=
+github.com/ArchangelX360/winarchive-tools v0.0.2-0.20260325194630-222d2c225724/go.mod h1:lVOhjSNzgimdH+vm6zWi/2NERvfYtuElT5zz2WJOB2M=
+github.com/abemedia/go-cabinet v0.2.1-0.20260805121955-616d15edeac0 h1:jz7hXIKvxZB+qEVT+dHOEYvy+npY7CVWocqySoA7p9U=
+github.com/abemedia/go-cabinet v0.2.1-0.20260805121955-616d15edeac0/go.mod h1:qcEKONndr02apBd37rqvADzgE631vozUk4f7L6KRdks=
+github.com/klauspost/compress v1.19.1 h1:VsB4HPswih7mmZ8WleSFQ75c/Ui1M4trX5oAsJnhSlk=
+github.com/klauspost/compress v1.19.1/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
+github.com/richardlehane/mscfb v1.0.6 h1:eN3bvvZCp00bs7Zf52bxNwAx5lJDBK1tCuH19qq5aC8=
+github.com/richardlehane/mscfb v1.0.6/go.mod h1:pe0+IUIc0AHh0+teNzBlJCtSyZdFOGgV4ZK9bsoV+Jo=
+github.com/richardlehane/msoleps v1.0.6 h1:9BvkpjvD+iUBalUY4esMwv6uBkfOip/Lzvd93jvR9gg=
+github.com/richardlehane/msoleps v1.0.6/go.mod h1:BWev5JBpU9Ko2WAgmZEuiz4/u3ZYTKbjLycmwiWUfWg=

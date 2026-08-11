@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  # push:
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: |
+          git init
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git fetch origin --depth=1 "$GITHUB_SHA"
+          git checkout --detach "$GITHUB_SHA"
+      - run: |
+          shopt -s globstar
+          chmod +x ./**/*.sh
+          ./build.sh
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_SHA:0:12}"
+          gh release create "$tag" ./bin/msvcup-linux-amd64 ./bin/msvcup-windows-amd64.exe --target "$GITHUB_SHA" --generate-notes ||
+          gh release upload "$tag" ./bin/msvcup-linux-amd64 ./bin/msvcup-windows-amd64.exe --clobber
