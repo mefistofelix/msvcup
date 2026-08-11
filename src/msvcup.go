@@ -203,64 +203,82 @@ msiexec, Wine, 7-Zip, or platform DLLs.
 `)
 }
 
-func defaultHost() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "x64"
-	case "386":
-		return "x86"
-	case "arm64":
-		return "arm64"
-	default:
-		return runtime.GOARCH
-	}
+type architectureNames struct {
+	MSVC string
+	SDK  string
+	WDK  string
+	Host bool
 }
 
-func normalizeArch(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "amd64", "x86_64":
-		return "x64"
-	case "386", "i386", "i686", "win32":
-		return "x86"
-	case "aarch64":
-		return "arm64"
-	case "", "neutral", "any":
-		return ""
-	default:
-		return strings.ToLower(strings.TrimSpace(v))
+var architectureAliases = map[string]string{
+	"amd64":   "x64",
+	"x86_64":  "x64",
+	"386":     "x86",
+	"i386":    "x86",
+	"i686":    "x86",
+	"win32":   "x86",
+	"aarch64": "arm64",
+	"neutral": "",
+	"any":     "",
+}
+
+var architectures = map[string]architectureNames{
+	"x64":     {MSVC: "X64", SDK: "x64", WDK: "x64", Host: true},
+	"x86":     {MSVC: "X86", SDK: "x86", Host: true},
+	"arm":     {MSVC: "ARM", SDK: "ARM"},
+	"arm64":   {MSVC: "ARM64", SDK: "ARM64", WDK: "ARM64", Host: true},
+	"arm64ec": {MSVC: "ARM64EC"},
+}
+
+func defaultHost() string {
+	return normalizeArch(runtime.GOARCH)
+}
+
+func normalizeArch(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if normalized, found := architectureAliases[value]; found {
+		return normalized
 	}
+	return value
+}
+
+type channelPair struct {
+	Stable  string
+	Preview string
+}
+
+var visualStudioFamilies = map[string]string{
+	"18": "2026",
+	"17": "2022",
+	"16": "2019",
+}
+
+var visualStudioChannels = map[string]channelPair{
+	"latest": {Stable: "https://aka.ms/vs/stable/channel", Preview: "https://aka.ms/vs/insiders/channel"},
+	"2026":   {Stable: "https://aka.ms/vs/18/stable/channel", Preview: "https://aka.ms/vs/18/insiders/channel"},
+	"2022":   {Stable: "https://aka.ms/vs/17/release/channel", Preview: "https://aka.ms/vs/17/pre/channel"},
+	"2019":   {Stable: "https://aka.ms/vs/16/release/channel", Preview: "https://aka.ms/vs/16/pre/channel"},
 }
 
 func channelURL(vs, channel string) (string, error) {
-	preview := strings.EqualFold(channel, "insiders") || strings.EqualFold(channel, "preview")
-	stable := strings.EqualFold(channel, "stable") || strings.EqualFold(channel, "latest") || strings.EqualFold(channel, "release")
+	channel = strings.ToLower(channel)
+	preview := channel == "insiders" || channel == "preview"
+	stable := channel == "stable" || channel == "latest" || channel == "release"
 	if !preview && !stable {
 		return "", fmt.Errorf("invalid channel %q", channel)
 	}
-	switch strings.ToLower(vs) {
-	case "latest":
-		if preview {
-			return "https://aka.ms/vs/insiders/channel", nil
-		}
-		return "https://aka.ms/vs/stable/channel", nil
-	case "2026", "18":
-		if preview {
-			return "https://aka.ms/vs/18/insiders/channel", nil
-		}
-		return "https://aka.ms/vs/18/stable/channel", nil
-	case "2022", "17":
-		if preview {
-			return "https://aka.ms/vs/17/pre/channel", nil
-		}
-		return "https://aka.ms/vs/17/release/channel", nil
-	case "2019", "16":
-		if preview {
-			return "https://aka.ms/vs/16/pre/channel", nil
-		}
-		return "https://aka.ms/vs/16/release/channel", nil
-	default:
+	family := strings.ToLower(vs)
+	if alias := visualStudioFamilies[family]; alias != "" {
+		family = alias
+	}
+	channels, found := visualStudioChannels[family]
+	if !found {
 		return "", fmt.Errorf("invalid Visual Studio family %q", vs)
 	}
+	if preview {
+		return channels.Preview, nil
+	}
+	return channels.Stable, nil
 }
 
 func newHTTPClient(timeout time.Duration) *http.Client {
@@ -298,8 +316,7 @@ func readResource(client *http.Client, name string, limit int64) ([]byte, error)
 	return os.ReadFile(name)
 }
 
-func loadCatalog(ctx context.Context, o manifestOptions) (*catalog, error) {
-	_ = ctx
+func loadCatalog(o manifestOptions) (*catalog, error) {
 	client := newHTTPClient(3 * time.Minute)
 	if o.Manifest != "" {
 		data, err := readResource(client, o.Manifest, 512<<20)
@@ -397,8 +414,8 @@ func addWindowsKitNuGetPackages(cat *catalog, options resolveOptions, roots []st
 	if sdkBuild == "" {
 		return errors.New("Windows Kit NuGet packages require a numeric Windows SDK component")
 	}
-	kitRoot := filepath.ToSlash(filepath.Join("Windows Kits", "10"))
-	libraryRoot := filepath.ToSlash(filepath.Join(kitRoot, "Lib", "10.0."+sdkBuild+".0"))
+	kitRoot := path.Join("Windows Kits", "10")
+	libraryRoot := path.Join(kitRoot, "Lib", "10.0."+sdkBuild+".0")
 	version := ""
 	var packages []vsPackage
 	for _, target := range options.Targets {
@@ -411,17 +428,13 @@ func addWindowsKitNuGetPackages(cat *catalog, options resolveOptions, roots []st
 			if err != nil {
 				return err
 			}
-			wdkPackage, err := loadNativeNuGetPackage(nugetPackageRequest{
-				ID:               wdkPackageID,
-				SDKBuild:         sdkBuild,
-				Channel:          options.Manifest.Channel,
-				PreferredVersion: version,
-				ArchiveTarget:    kitRoot,
-			})
+			wdkPackage, err := loadWindowsKitPackage(nugetPackageRequest{
+				ID:            wdkPackageID,
+				SDKBuild:      sdkBuild,
+				Channel:       options.Manifest.Channel,
+				ArchiveTarget: kitRoot,
+			}, &version)
 			if err != nil {
-				return err
-			}
-			if err := selectKitVersion(&version, wdkPackage); err != nil {
 				return err
 			}
 			wdkPackage.Dependencies = map[string]dependency{
@@ -429,17 +442,13 @@ func addWindowsKitNuGetPackages(cat *catalog, options resolveOptions, roots []st
 			}
 			packages = append(packages, wdkPackage)
 		}
-		sdkPackage, err := loadNativeNuGetPackage(nugetPackageRequest{
-			ID:               sdkPackageID,
-			SDKBuild:         sdkBuild,
-			Channel:          options.Manifest.Channel,
-			PreferredVersion: version,
-			ArchiveTarget:    libraryRoot,
-		})
+		sdkPackage, err := loadWindowsKitPackage(nugetPackageRequest{
+			ID:            sdkPackageID,
+			SDKBuild:      sdkBuild,
+			Channel:       options.Manifest.Channel,
+			ArchiveTarget: libraryRoot,
+		}, &version)
 		if err != nil {
-			return err
-		}
-		if err := selectKitVersion(&version, sdkPackage); err != nil {
 			return err
 		}
 		sdkPackage.Dependencies = map[string]dependency{
@@ -447,17 +456,13 @@ func addWindowsKitNuGetPackages(cat *catalog, options resolveOptions, roots []st
 		}
 		packages = append(packages, sdkPackage)
 	}
-	commonSDK, err := loadNativeNuGetPackage(nugetPackageRequest{
-		ID:               "Microsoft.Windows.SDK.cpp",
-		SDKBuild:         sdkBuild,
-		Channel:          options.Manifest.Channel,
-		PreferredVersion: version,
-		ArchiveTarget:    kitRoot,
-	})
+	commonSDK, err := loadWindowsKitPackage(nugetPackageRequest{
+		ID:            "Microsoft.Windows.SDK.cpp",
+		SDKBuild:      sdkBuild,
+		Channel:       options.Manifest.Channel,
+		ArchiveTarget: kitRoot,
+	}, &version)
 	if err != nil {
-		return err
-	}
-	if err := selectKitVersion(&version, commonSDK); err != nil {
 		return err
 	}
 	cat.Manifest.Packages = append(cat.Manifest.Packages, commonSDK)
@@ -468,20 +473,22 @@ func addWindowsKitNuGetPackages(cat *catalog, options resolveOptions, roots []st
 func requestedWindowsKitPackages(roots, targets []string) (bool, bool) {
 	knownIDs := []string{"Microsoft.Windows.SDK.cpp"}
 	for _, target := range targets {
-		if id, err := sdkNuGetPackageID(target); err == nil {
-			knownIDs = append(knownIDs, id)
+		names := architectures[normalizeArch(target)]
+		if names.SDK != "" {
+			knownIDs = append(knownIDs, "Microsoft.Windows.SDK.cpp."+names.SDK)
 		}
-		if id, err := wdkNuGetPackageID(target); err == nil {
-			knownIDs = append(knownIDs, id)
+		if names.WDK != "" {
+			knownIDs = append(knownIDs, "Microsoft.Windows.WDK."+names.WDK)
 		}
 	}
 	needsSDK := false
 	needsWDK := false
 	for _, root := range roots {
-		if strings.HasPrefix(root, "-") && root != "-" {
+		pattern, excluded := splitPackageSelector(root)
+		if excluded {
 			continue
 		}
-		switch strings.ToLower(root) {
+		switch strings.ToLower(pattern) {
 		case "sdk":
 			needsSDK = true
 			continue
@@ -491,7 +498,7 @@ func requestedWindowsKitPackages(roots, targets []string) (bool, bool) {
 			continue
 		}
 		for _, id := range knownIDs {
-			matched, _ := path.Match(strings.ToLower(root), strings.ToLower(id))
+			matched, _ := path.Match(strings.ToLower(pattern), strings.ToLower(id))
 			if !matched {
 				continue
 			}
@@ -502,6 +509,15 @@ func requestedWindowsKitPackages(roots, targets []string) (bool, bool) {
 		}
 	}
 	return needsSDK, needsWDK
+}
+
+func loadWindowsKitPackage(request nugetPackageRequest, version *string) (vsPackage, error) {
+	request.PreferredVersion = *version
+	packageInfo, err := loadNativeNuGetPackage(request)
+	if err != nil {
+		return vsPackage{}, err
+	}
+	return packageInfo, selectKitVersion(version, packageInfo)
 }
 
 func selectKitVersion(selected *string, packageInfo vsPackage) error {
@@ -516,9 +532,13 @@ func selectKitVersion(selected *string, packageInfo vsPackage) error {
 }
 
 func latestSDKBuild(packages []vsPackage) string {
+	return latestPackageMatch(packages, sdkComponentRE)
+}
+
+func latestPackageMatch(packages []vsPackage, expression *regexp.Regexp) string {
 	best := ""
 	for _, packageInfo := range packages {
-		match := sdkComponentRE.FindStringSubmatch(packageInfo.ID)
+		match := expression.FindStringSubmatch(packageInfo.ID)
 		if len(match) != 2 {
 			continue
 		}
@@ -530,29 +550,19 @@ func latestSDKBuild(packages []vsPackage) string {
 }
 
 func sdkNuGetPackageID(target string) (string, error) {
-	switch normalizeArch(target) {
-	case "x64":
-		return "Microsoft.Windows.SDK.cpp.x64", nil
-	case "arm64":
-		return "Microsoft.Windows.SDK.cpp.ARM64", nil
-	case "x86":
-		return "Microsoft.Windows.SDK.cpp.x86", nil
-	case "arm":
-		return "Microsoft.Windows.SDK.cpp.ARM", nil
-	default:
+	names, found := architectures[normalizeArch(target)]
+	if !found || names.SDK == "" {
 		return "", fmt.Errorf("Windows SDK NuGet does not support target %s", target)
 	}
+	return "Microsoft.Windows.SDK.cpp." + names.SDK, nil
 }
 
 func wdkNuGetPackageID(target string) (string, error) {
-	switch normalizeArch(target) {
-	case "x64":
-		return "Microsoft.Windows.WDK.x64", nil
-	case "arm64":
-		return "Microsoft.Windows.WDK.ARM64", nil
-	default:
+	names, found := architectures[normalizeArch(target)]
+	if !found || names.WDK == "" {
 		return "", fmt.Errorf("WDK NuGet supports x64 and arm64 targets, not %s", target)
 	}
+	return "Microsoft.Windows.WDK." + names.WDK, nil
 }
 
 func loadNativeNuGetPackage(request nugetPackageRequest) (vsPackage, error) {
@@ -696,15 +706,14 @@ func runList(args []string) error {
 	if err != nil {
 		return err
 	}
-	cat, err := loadCatalog(context.Background(), o)
+	resolve := resolveOptions{Manifest: o}
+	if err := setResolveArchitectures(&resolve, *targetValue); err != nil {
+		return err
+	}
+	cat, err := loadCatalog(resolve.Manifest)
 	if err != nil {
 		return err
 	}
-	targets, err := parseTargets(*targetValue)
-	if err != nil {
-		return err
-	}
-	resolve := resolveOptions{Manifest: o, Targets: targets}
 	if err := addWindowsKitNuGetPackages(cat, resolve, selectors); err != nil {
 		return err
 	}
@@ -767,8 +776,7 @@ func expandPackageAliases(cat *catalog, options resolveOptions, selectors []stri
 	resolver := newResolver(cat, options)
 	var expanded []string
 	for _, selector := range selectors {
-		excluded := strings.HasPrefix(selector, "-") && selector != "-"
-		name := strings.TrimPrefix(selector, "-")
+		name, excluded := splitPackageSelector(selector)
 		patterns, err := resolver.expandAlias(name)
 		if err != nil {
 			return nil, err
@@ -781,6 +789,13 @@ func expandPackageAliases(cat *catalog, options resolveOptions, selectors []stri
 		}
 	}
 	return expanded, nil
+}
+
+func splitPackageSelector(value string) (string, bool) {
+	if strings.HasPrefix(value, "-") && value != "-" {
+		return strings.TrimPrefix(value, "-"), true
+	}
+	return value, false
 }
 
 type packageSummary struct {
@@ -810,8 +825,7 @@ func matchesPackageSelection(id string, selectors []string) bool {
 	hasInclusion := false
 	lowerID := strings.ToLower(id)
 	for _, selector := range selectors {
-		excluded := strings.HasPrefix(selector, "-") && selector != "-"
-		pattern := strings.TrimPrefix(selector, "-")
+		pattern, excluded := splitPackageSelector(selector)
 		matched, _ := path.Match(strings.ToLower(pattern), lowerID)
 		if excluded && matched {
 			return false
@@ -875,10 +889,11 @@ func (r *resolver) expandRoots(roots []string) ([]string, error) {
 		roots = []string{"msvc", "sdk"}
 	}
 	for _, spec := range roots {
-		if !strings.HasPrefix(spec, "-") || spec == "-" {
+		pattern, excluded := splitPackageSelector(spec)
+		if !excluded {
 			continue
 		}
-		patterns, err := r.expandAlias(strings.TrimPrefix(spec, "-"))
+		patterns, err := r.expandAlias(pattern)
 		if err != nil {
 			return nil, err
 		}
@@ -891,10 +906,11 @@ func (r *resolver) expandRoots(roots []string) ([]string, error) {
 	}
 	var result []string
 	for _, spec := range roots {
-		if strings.HasPrefix(spec, "-") && spec != "-" {
+		pattern, excluded := splitPackageSelector(spec)
+		if excluded {
 			continue
 		}
-		patterns, err := r.expandAlias(spec)
+		patterns, err := r.expandAlias(pattern)
 		if err != nil {
 			return nil, err
 		}
@@ -971,34 +987,15 @@ func (r *resolver) expandAlias(spec string) ([]string, error) {
 var msvcToolsetPackageRE = regexp.MustCompile(`(?i)^Microsoft\.VC\.(\d+\.\d+\.\d+\.\d+)\.Tools\.Host[^.]+\.Target[^.]+\.base$`)
 
 func latestMSVCToolset(packages []vsPackage) string {
-	best := ""
-	for _, packageInfo := range packages {
-		match := msvcToolsetPackageRE.FindStringSubmatch(packageInfo.ID)
-		if len(match) != 2 {
-			continue
-		}
-		if best == "" || compareVersions(match[1], best) > 0 {
-			best = match[1]
-		}
-	}
-	return best
+	return latestPackageMatch(packages, msvcToolsetPackageRE)
 }
 
 func packageArchName(arch string) (string, error) {
-	switch normalizeArch(arch) {
-	case "x64":
-		return "X64", nil
-	case "x86":
-		return "X86", nil
-	case "arm":
-		return "ARM", nil
-	case "arm64":
-		return "ARM64", nil
-	case "arm64ec":
-		return "ARM64EC", nil
-	default:
+	names, found := architectures[normalizeArch(arch)]
+	if !found || names.MSVC == "" {
 		return "", fmt.Errorf("unsupported MSVC architecture %s", arch)
 	}
+	return names.MSVC, nil
 }
 
 func (r *resolver) matchPackageIDs(pattern string) ([]string, error) {
@@ -1112,28 +1109,25 @@ func (r *resolver) dependencyEnabled(dep dependency) bool {
 	if kind == "excluded" {
 		return false
 	}
-	if dep.Chip != "" && !compatibleArch(dep.Chip, r.opts.Manifest.Host, r.opts.Targets) {
-		return false
-	}
-	if dep.ProductArch != "" && !compatibleArch(dep.ProductArch, r.opts.Manifest.Host, r.opts.Targets) {
-		return false
-	}
-	if dep.MachineArch != "" && !compatibleArch(dep.MachineArch, r.opts.Manifest.Host, r.opts.Targets) {
-		return false
+	for _, arch := range []string{dep.Chip, dep.ProductArch, dep.MachineArch} {
+		if arch != "" && !compatibleArch(arch, r.opts.Manifest.Host, r.opts.Targets) {
+			return false
+		}
 	}
 	return true
 }
 
 func compatibleArch(value, host string, targets []string) bool {
 	value = normalizeArch(value)
-	if value == "" || value == normalizeArch(host) {
+	host = normalizeArch(host)
+	if value == "" || value == host {
 		return true
 	}
-	if value == "x86" && normalizeArch(host) == "x64" {
+	if value == "x86" && host == "x64" {
 		return true
 	}
 	for _, target := range targets {
-		if value == normalizeArch(target) {
+		if value == target {
 			return true
 		}
 	}
@@ -1190,14 +1184,15 @@ func (r *resolver) candidates(id string, dep dependency) []*vsPackage {
 
 func packageArchScore(p *vsPackage, host string, targets []string) int {
 	score := 1
+	host = normalizeArch(host)
 	for _, value := range []string{p.MachineArch, p.ProductArch} {
 		arch := normalizeArch(value)
 		if arch == "" {
 			continue
 		}
-		if arch == normalizeArch(host) {
+		if arch == host {
 			score += 20
-		} else if arch == "x86" && normalizeArch(host) == "x64" {
+		} else if arch == "x86" && host == "x64" {
 			score += 5
 		} else {
 			return -1
@@ -1246,18 +1241,32 @@ func parseTargets(value string) ([]string, error) {
 	var result []string
 	for _, item := range strings.Split(value, ",") {
 		arch := normalizeArch(item)
-		switch arch {
-		case "x64", "x86", "arm", "arm64", "arm64ec":
-			result = append(result, arch)
-		case "":
-		default:
+		if arch == "" {
+			continue
+		}
+		if _, found := architectures[arch]; !found {
 			return nil, fmt.Errorf("invalid target architecture %q", item)
 		}
+		result = append(result, arch)
 	}
 	if len(result) == 0 {
 		return nil, errors.New("at least one target is required")
 	}
 	return uniqueStrings(result), nil
+}
+
+func setResolveArchitectures(options *resolveOptions, targetValue string) error {
+	host := normalizeArch(options.Manifest.Host)
+	if names, found := architectures[host]; !found || !names.Host {
+		return fmt.Errorf("invalid host architecture %q", options.Manifest.Host)
+	}
+	targets, err := parseTargets(targetValue)
+	if err != nil {
+		return err
+	}
+	options.Manifest.Host = host
+	options.Targets = targets
+	return nil
 }
 
 func addResolveFlags(fs *flag.FlagSet, o *resolveOptions, targetValue *string) {
@@ -1280,7 +1289,7 @@ func parsePackageSelection(args, defaults []string) ([]string, error) {
 		return nil, errors.New("package selection is empty")
 	}
 	for _, root := range roots {
-		pattern := strings.TrimPrefix(root, "-")
+		pattern, _ := splitPackageSelector(root)
 		if _, err := path.Match(strings.ToLower(pattern), ""); err != nil {
 			return nil, fmt.Errorf("invalid package pattern %q: %w", root, err)
 		}
@@ -1289,12 +1298,10 @@ func parsePackageSelection(args, defaults []string) ([]string, error) {
 }
 
 func resolvePackages(roots []string, o *resolveOptions, targetValue string) (*catalog, *resolution, error) {
-	targets, err := parseTargets(targetValue)
-	if err != nil {
+	if err := setResolveArchitectures(o, targetValue); err != nil {
 		return nil, nil, err
 	}
-	o.Targets = targets
-	cat, err := loadCatalog(context.Background(), o.Manifest)
+	cat, err := loadCatalog(o.Manifest)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1368,6 +1375,81 @@ type installOptions struct {
 	KeepRaw              bool
 	DryRun               bool
 	UpdateLock           bool
+}
+
+func installPackage(packageInfo *vsPackage, downloaded map[string]string, dest string, keepRaw bool) error {
+	cabinets := map[string]string{}
+	for _, item := range packageInfo.Payloads {
+		if file := downloaded[payloadKey(item)]; file != "" {
+			cabinets[strings.ToLower(payloadBaseName(item))] = file
+		}
+	}
+	for _, item := range packageInfo.Payloads {
+		file := downloaded[payloadKey(item)]
+		if file == "" {
+			continue
+		}
+		if err := installPayload(item, file, dest, packageInfo, cabinets, keepRaw); err != nil {
+			return fmt.Errorf("%s: %w", payloadBaseName(item), err)
+		}
+	}
+	return nil
+}
+
+func installPayload(item payload, file, dest string, packageInfo *vsPackage, cabinets map[string]string, keepRaw bool) error {
+	name := payloadBaseName(item)
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".msi":
+		return extractMSI(file, dest, cabinets)
+	case ".vsix", ".zip", ".nupkg":
+		root, err := packageArchiveRoot(dest, packageInfo)
+		if err != nil {
+			return err
+		}
+		return extractZipPayload(file, zipExtractOptions{
+			Destination: root,
+			Prefix:      packageInfo.ArchivePrefix,
+			VSIX:        ext == ".vsix",
+		})
+	case ".cab":
+		return nil
+	case ".exe", ".msu":
+		if !keepRaw {
+			fmt.Fprintf(os.Stderr, "warning: retained in cache but not executed: %s (%s)\n", name, packageInfo.ID)
+			return nil
+		}
+	default:
+		if !keepRaw {
+			return nil
+		}
+	}
+	rawDest := filepath.Join(dest, "_payloads", safeName(packageInfo.ID), name)
+	return copyFile(file, rawDest)
+}
+
+func packageArchiveRoot(dest string, packageInfo *vsPackage) (string, error) {
+	if packageInfo.ArchiveTarget != "" {
+		return safeJoin(dest, packageInfo.ArchiveTarget)
+	}
+	value := strings.ReplaceAll(packageInfo.ExtensionDir, "\\", "/")
+	root := filepath.Join(dest, "_extensions")
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "[installdir]"):
+		root = dest
+		value = value[len("[installdir]"):]
+	case strings.HasPrefix(lower, "[installroot]"):
+		root = dest
+		value = value[len("[installroot]"):]
+	case value == "":
+		return dest, nil
+	}
+	value = strings.TrimLeft(value, "/")
+	if value == "" {
+		return root, nil
+	}
+	return safeJoin(root, value)
 }
 
 type installLock struct {
@@ -1500,14 +1582,12 @@ func readInstallLock(path string, roots []string, options *resolveOptions, targe
 	if !equalFoldStrings(lock.Roots, roots) {
 		return nil, nil, false, fmt.Errorf("lock %s was created for %v, requested %v; use --update-lock to replace it", path, lock.Roots, roots)
 	}
-	targets, err := parseTargets(targetValue)
-	if err != nil {
+	if err := setResolveArchitectures(options, targetValue); err != nil {
 		return nil, nil, false, err
 	}
-	if !equalFoldStrings(lock.Targets, targets) || !strings.EqualFold(lock.Host, options.Manifest.Host) {
-		return nil, nil, false, fmt.Errorf("lock %s targets %s/%v, requested %s/%v; use --update-lock to replace it", path, lock.Host, lock.Targets, options.Manifest.Host, targets)
+	if !equalFoldStrings(lock.Targets, options.Targets) || !strings.EqualFold(lock.Host, options.Manifest.Host) {
+		return nil, nil, false, fmt.Errorf("lock %s targets %s/%v, requested %s/%v; use --update-lock to replace it", path, lock.Host, lock.Targets, options.Manifest.Host, options.Targets)
 	}
-	options.Targets = targets
 	resolved := &resolution{Packages: make([]*vsPackage, 0, len(lock.Packages))}
 	for index := range lock.Packages {
 		resolved.Packages = append(resolved.Packages, &lock.Packages[index])
@@ -1641,13 +1721,13 @@ func downloadResolution(ctx context.Context, resolved *resolution, options downl
 }
 
 func payloadBaseName(p payload) string {
-	name := filepath.Base(strings.ReplaceAll(p.FileName, "\\", "/"))
+	name := path.Base(strings.ReplaceAll(p.FileName, "\\", "/"))
 	if name != "." && name != "" {
 		return name
 	}
 	u, err := url.Parse(p.URL)
 	if err == nil {
-		name = filepath.Base(u.Path)
+		name = path.Base(u.Path)
 	}
 	if name == "" || name == "." {
 		return "payload"
@@ -1791,22 +1871,51 @@ func runExtractMSI(args []string) error {
 	return extractMSI(msiPath, dest, lookup)
 }
 
+type vcvarsConfiguration struct {
+	Target    string
+	Name      string
+	Arguments []string
+}
+
+var vcvarsConfigurations = map[string]vcvarsConfiguration{
+	"x64_x64":     {Name: "vcvars64.bat", Arguments: []string{"x64", "amd64"}},
+	"x64_x86":     {Name: "vcvarsamd64_x86.bat", Arguments: []string{"amd64_x86", "x64_x86"}},
+	"x64_arm":     {Name: "vcvarsamd64_arm.bat", Arguments: []string{"amd64_arm", "x64_arm"}},
+	"x64_arm64":   {Name: "vcvarsamd64_arm64.bat", Arguments: []string{"amd64_arm64", "x64_arm64"}},
+	"x86_x86":     {Name: "vcvars32.bat", Arguments: []string{"x86"}},
+	"x86_x64":     {Name: "vcvarsx86_amd64.bat", Arguments: []string{"x86_amd64", "x86_x64"}},
+	"x86_arm":     {Name: "vcvarsx86_arm.bat", Arguments: []string{"x86_arm"}},
+	"x86_arm64":   {Name: "vcvarsx86_arm64.bat", Arguments: []string{"x86_arm64"}},
+	"arm64_arm64": {Name: "vcvarsarm64.bat", Arguments: []string{"arm64"}},
+}
+
+func vcvarsForTargets(host string, targets []string) []vcvarsConfiguration {
+	var result []vcvarsConfiguration
+	host = normalizeArch(host)
+	for _, target := range targets {
+		target = normalizeArch(target)
+		configuration, found := vcvarsConfigurations[host+"_"+target]
+		if found {
+			configuration.Target = target
+			result = append(result, configuration)
+		}
+	}
+	return result
+}
+
 func writeEnvironmentScripts(root, host string, targets []string) error {
 	msvcVersion := newestVersionDirectory(filepath.Join(root, "VC", "Tools", "MSVC"))
 	sdkVersion := newestVersionDirectory(filepath.Join(root, "Windows Kits", "10", "bin"))
 	if msvcVersion == "" && sdkVersion == "" {
 		return nil
 	}
-	for _, target := range targets {
-		name := microsoftBatchName(host, target)
-		if name == "" {
-			continue
-		}
-		if err := writeBatchEnvironment(root, name, host, target, msvcVersion, sdkVersion); err != nil {
+	configurations := vcvarsForTargets(host, targets)
+	for _, configuration := range configurations {
+		if err := writeBatchEnvironment(root, configuration.Name, host, configuration.Target, msvcVersion, sdkVersion); err != nil {
 			return err
 		}
 	}
-	return writeVCVarsAll(root, host, targets)
+	return writeVCVarsAll(root, configurations)
 }
 
 var versionDirectoryRE = regexp.MustCompile(`^\d+(?:\.\d+)+$`)
@@ -1849,80 +1958,22 @@ func writeBatchEnvironment(root, name, host, target, msvcVersion, sdkVersion str
 	return os.WriteFile(filepath.Join(root, name), []byte(b.String()), 0o644)
 }
 
-func writeVCVarsAll(root, host string, targets []string) error {
+func writeVCVarsAll(root string, configurations []vcvarsConfiguration) error {
 	var b strings.Builder
 	b.WriteString("@echo off\r\n")
 	b.WriteString("set \"_MSVCUP_ARCH=%~1\"\r\n")
 	b.WriteString("if not defined _MSVCUP_ARCH set \"_MSVCUP_ARCH=x86\"\r\n")
-	for _, target := range targets {
-		name := microsoftBatchName(host, target)
-		if name == "" {
-			continue
-		}
-		for _, argument := range vcvarsArguments(host, target) {
-			fmt.Fprintf(&b, "if /i \"%%_MSVCUP_ARCH%%\"==\"%s\" goto %s\r\n", argument, target)
+	for _, configuration := range configurations {
+		for _, argument := range configuration.Arguments {
+			fmt.Fprintf(&b, "if /i \"%%_MSVCUP_ARCH%%\"==\"%s\" goto %s\r\n", argument, configuration.Target)
 		}
 	}
 	b.WriteString("echo [vcvarsall.bat] Error: unsupported architecture '%_MSVCUP_ARCH%' 1>&2\r\n")
 	b.WriteString("set \"_MSVCUP_ARCH=\"\r\nexit /b 1\r\n")
-	for _, target := range targets {
-		name := microsoftBatchName(host, target)
-		if name == "" {
-			continue
-		}
-		fmt.Fprintf(&b, ":%s\r\nset \"_MSVCUP_ARCH=\"\r\ncall \"%%~dp0%s\"\r\nexit /b %%errorlevel%%\r\n", target, name)
+	for _, configuration := range configurations {
+		fmt.Fprintf(&b, ":%s\r\nset \"_MSVCUP_ARCH=\"\r\ncall \"%%~dp0%s\"\r\nexit /b %%errorlevel%%\r\n", configuration.Target, configuration.Name)
 	}
 	return os.WriteFile(filepath.Join(root, "vcvarsall.bat"), []byte(b.String()), 0o644)
-}
-
-func microsoftBatchName(host, target string) string {
-	switch normalizeArch(host) + "_" + normalizeArch(target) {
-	case "x64_x64":
-		return "vcvars64.bat"
-	case "x64_x86":
-		return "vcvarsamd64_x86.bat"
-	case "x64_arm":
-		return "vcvarsamd64_arm.bat"
-	case "x64_arm64":
-		return "vcvarsamd64_arm64.bat"
-	case "x86_x86":
-		return "vcvars32.bat"
-	case "x86_x64":
-		return "vcvarsx86_amd64.bat"
-	case "x86_arm":
-		return "vcvarsx86_arm.bat"
-	case "x86_arm64":
-		return "vcvarsx86_arm64.bat"
-	case "arm64_arm64":
-		return "vcvarsarm64.bat"
-	}
-	return ""
-}
-
-func vcvarsArguments(host, target string) []string {
-	pair := normalizeArch(host) + "_" + normalizeArch(target)
-	switch pair {
-	case "x64_x64":
-		return []string{"x64", "amd64"}
-	case "x64_x86":
-		return []string{"amd64_x86", "x64_x86"}
-	case "x64_arm":
-		return []string{"amd64_arm", "x64_arm"}
-	case "x64_arm64":
-		return []string{"amd64_arm64", "x64_arm64"}
-	case "x86_x86":
-		return []string{"x86"}
-	case "x86_x64":
-		return []string{"x86_amd64", "x86_x64"}
-	case "x86_arm":
-		return []string{"x86_arm"}
-	case "x86_arm64":
-		return []string{"x86_arm64"}
-	case "arm64_arm64":
-		return []string{"arm64"}
-	default:
-		return nil
-	}
 }
 
 func formatBytes(value int64) string {

@@ -4,6 +4,7 @@
 
 - Keep application code in exactly `src/msvcup.go` and `src/archives.go`.
 - `msvcup.go` owns CLI and domain logic. `archives.go` owns generic archive/container handling.
+- Translate Visual Studio `ExtensionDir`, `ArchivePrefix`, and `ArchiveTarget` metadata in `msvcup.go`; pass generic destinations and prefixes to `archives.go`.
 - Build with `CGO_ENABLED=0` for Windows amd64 and Linux amd64.
 - Keep build orchestration in `build.sh`. The GitHub workflow must invoke it rather than duplicate its toolchain or compiler commands.
 - Linux lists, resolves, downloads, and extracts Windows toolchains. Do not generate Bash environment scripts or try to execute Microsoft binaries on Linux.
@@ -27,6 +28,7 @@
 - Let each line express one clear operation. Do not compress unrelated operations.
 - Prefer guard clauses so the main path stays flat.
 - Use descriptive names. Keep idiomatic short names only when their meaning is immediate, such as `err` or a small method receiver.
+- Keep architecture names, aliases, channel families, and standard `vcvars*.bat` variants in their declarative tables instead of adding parallel switches.
 - Prefer standard-library and language features over wrappers.
 - Add helpers and abstractions only for a concrete repeated operation or a strict layer boundary.
 - Keep format handling generic. Driver-, SDK-, and component-specific choices belong in the CLI/domain layer.
