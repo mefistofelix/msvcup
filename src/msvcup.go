@@ -857,6 +857,7 @@ type installOptions struct {
 
 type installLock struct {
 	Format     int         `json:"format"`
+	Complete   bool        `json:"complete"`
 	Roots      []string    `json:"roots"`
 	Host       string      `json:"host"`
 	Targets    []string    `json:"targets"`
@@ -899,6 +900,21 @@ func runInstall(args []string) error {
 			return err
 		}
 	}
+	if locked {
+		info, statErr := os.Stat(dest)
+		switch {
+		case statErr == nil && info.IsDir():
+			fmt.Printf("already installed %d packages in %s\n", len(resolved), dest)
+			return nil
+		case statErr == nil:
+			return fmt.Errorf("destination %s is not a directory", dest)
+		case !errors.Is(statErr, os.ErrNotExist):
+			return statErr
+		}
+		if err := os.Remove(lockFile); err != nil {
+			return fmt.Errorf("remove stale lock %s: %w", lockFile, err)
+		}
+	}
 	if options.UpdateLock || !locked {
 		cat, resolved, err = resolvePackages(selectors, &options.Resolve, target)
 		if err != nil {
@@ -917,6 +933,11 @@ func runInstall(args []string) error {
 	if err != nil {
 		return err
 	}
+	if options.UpdateLock {
+		if err := os.Remove(lockFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("invalidate lock %s: %w", lockFile, err)
+		}
+	}
 	for _, packageInfo := range resolved {
 		if len(packageInfo.Payloads) == 0 {
 			continue
@@ -929,10 +950,8 @@ func runInstall(args []string) error {
 	if err := writeEnvironmentScripts(dest, options.Resolve.Host, options.Resolve.Targets); err != nil {
 		return err
 	}
-	if options.UpdateLock || !locked {
-		if err := writeLock(lockFile, selectors, cat, resolved, options.Resolve); err != nil {
-			return err
-		}
+	if err := writeLock(lockFile, selectors, cat, resolved, options.Resolve); err != nil {
+		return err
 	}
 	fmt.Printf("installed %d packages into %s\n", len(resolved), dest)
 	return nil
@@ -951,7 +970,7 @@ func readLock(name string, roots []string, options commandOptions) (*catalog, []
 		return nil, nil, false, fmt.Errorf("decode lock %s: %w", name, err)
 	}
 	equal := func(left, right string) bool { return strings.EqualFold(left, right) }
-	if lock.Format != 1 || !slices.EqualFunc(lock.Roots, roots, equal) ||
+	if lock.Format != 2 || !lock.Complete || !slices.EqualFunc(lock.Roots, roots, equal) ||
 		!slices.EqualFunc(lock.Targets, options.Targets, equal) || !equal(lock.Host, options.Host) {
 		return nil, nil, false, fmt.Errorf("lock %s does not match this request; use --update-lock", name)
 	}
@@ -964,7 +983,7 @@ func readLock(name string, roots []string, options commandOptions) (*catalog, []
 }
 
 func writeLock(name string, roots []string, cat *catalog, resolved []*vsPackage, options commandOptions) error {
-	lock := installLock{Format: 1, Roots: slices.Clone(roots), Host: options.Host,
+	lock := installLock{Format: 2, Complete: true, Roots: slices.Clone(roots), Host: options.Host,
 		Targets: slices.Clone(options.Targets), ChannelURL: cat.ChannelURL}
 	for _, packageInfo := range resolved {
 		lock.Packages = append(lock.Packages, *packageInfo)
@@ -973,7 +992,38 @@ func writeLock(name string, roots []string, cat *catalog, resolved []*vsPackage,
 	if err != nil {
 		return err
 	}
-	return writeOutput(name, bytes.NewReader(append(data, '\n')), 0o644, time.Time{})
+	return writeAtomic(name, append(data, '\n'))
+}
+
+func writeAtomic(name string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(name), ".msvcup-lock-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := file.Name()
+	defer os.Remove(temporaryName)
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Chmod(0o644); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryName, name); err != nil {
+		return fmt.Errorf("replace lock %s: %w", name, err)
+	}
+	return nil
 }
 
 func payloadName(item payload) string {

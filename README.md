@@ -30,7 +30,7 @@ Excluding a directly selected package skips it. Excluding a required dependency 
 
 ## Lock and downloads
 
-An install writes `DIR.lock` next to the destination. It records the selection, architectures, channel, package versions, payload URLs, sizes, and hashes. A later invocation with the same arguments reads the lock without querying Microsoft manifests. Use `--update-lock` to resolve and replace it.
+An install atomically writes `DIR.lock` next to the destination only after every package and environment script has been installed successfully. It records the completed state, selection, architectures, channel, package versions, payload URLs, sizes, and hashes. A later invocation with the same arguments and an existing destination returns immediately without querying Microsoft manifests or touching the destination. Use `--update-lock` to resolve and replace it.
 
 There is no persistent payload cache. Every installation downloads into a temporary directory and removes it when finished, so a separate force-download mode is unnecessary.
 
