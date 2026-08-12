@@ -13,9 +13,9 @@ call toolchain\vcvars64.bat
 cl hello.c
 ```
 
-The defaults are Visual Studio 18, the stable channel, and the current architecture. Select another family with `--vs`, use `--channel preview`, or pass an explicit HTTP/HTTPS channel URL to `--channel`. `--target` accepts a comma-separated architecture list.
+The defaults are Visual Studio 18, the stable channel, and the current architecture. Select another family with `--vs`, use `--channel preview`, or pass an explicit HTTP/HTTPS channel URL to `--channel`. Without version overrides, the selected Visual Studio catalog supplies its default MSVC toolset and Windows SDK. Use `--toolset 14.44` to select a toolset line and `--sdk-version 10.0.22621.0` to select an SDK ABI version. `--target` accepts a comma-separated architecture list.
 
-MSVC comes from the selected Visual Studio catalog. `sdk` and `wdk` use the official Microsoft NuGet packages. Their package roots are merged as declared by Microsoft: common SDK and WDK content maps to `Windows Kits/10`, while target-specific SDK libraries map to `Windows Kits/10/Lib/<version>`. Files are not relocated individually.
+MSVC comes from the selected Visual Studio catalog. `sdk` and `wdk` use the official Microsoft NuGet packages. WDK installation requires Microsoft to publish a WDK package matching the selected SDK family. Their package roots are merged as declared by Microsoft: common SDK and WDK content maps to `Windows Kits/10`, while target-specific SDK libraries map to `Windows Kits/10/Lib/<version>`. Files are not relocated individually.
 
 ## Selection
 

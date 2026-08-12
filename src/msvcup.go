@@ -88,8 +88,8 @@ type catalog struct {
 }
 
 type commandOptions struct {
-	VS, Channel, Host string
-	Targets           []string
+	VS, Channel, Host, Toolset, SDKVersion string
+	Targets                                []string
 }
 
 func main() {
@@ -164,6 +164,12 @@ func defaultHost() string {
 }
 
 func setArchitectures(options *commandOptions, targetValue string) error {
+	if options.Toolset != "" && !toolsetLineRE.MatchString(options.Toolset) {
+		return fmt.Errorf("invalid toolset %q: use a line such as 14.44", options.Toolset)
+	}
+	if options.SDKVersion != "" && !sdkVersionRE.MatchString(options.SDKVersion) {
+		return fmt.Errorf("invalid SDK version %q: use an ABI version such as 10.0.22621.0", options.SDKVersion)
+	}
 	host := normalizeArch(options.Host)
 	if names, found := architectures[host]; !found || !names.Host {
 		return fmt.Errorf("invalid host architecture %q", options.Host)
@@ -191,6 +197,8 @@ func addResolveFlags(fs *flag.FlagSet, options *commandOptions, target *string) 
 	fs.StringVar(&options.VS, "vs", "18", "Visual Studio family: 18, 17, 16, or latest")
 	fs.StringVar(&options.Channel, "channel", "stable", "stable, preview, or an explicit channel URL")
 	fs.StringVar(&options.Host, "host", defaultHost(), "host architecture")
+	fs.StringVar(&options.Toolset, "toolset", "", "MSVC toolset line, for example 14.44")
+	fs.StringVar(&options.SDKVersion, "sdk-version", "", "Windows SDK ABI version, for example 10.0.22621.0")
 	fs.StringVar(target, "target", defaultHost(), "comma-separated target architectures")
 }
 
@@ -376,6 +384,14 @@ func nugetCatalogURL(data json.RawMessage) (string, error) {
 func selectKitVersion(versions []string, build, channel, preferred string) string {
 	prefix := "10.0." + build + "."
 	prerelease := strings.EqualFold(channel, "preview") || strings.EqualFold(channel, "insiders")
+	if preferred != "" {
+		for _, candidate := range versions {
+			if strings.EqualFold(candidate, preferred) {
+				return candidate
+			}
+		}
+		return ""
+	}
 	best := ""
 	for _, candidate := range versions {
 		if !strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(prefix)) {
@@ -383,9 +399,6 @@ func selectKitVersion(versions []string, build, channel, preferred string) strin
 		}
 		if strings.Contains(candidate, "-") && !prerelease {
 			continue
-		}
-		if preferred != "" && strings.EqualFold(candidate, preferred) {
-			return candidate
 		}
 		if best == "" || compareVersions(candidate, best) > 0 {
 			best = candidate
@@ -396,12 +409,28 @@ func selectKitVersion(versions []string, build, channel, preferred string) strin
 
 var sdkComponentRE = regexp.MustCompile(`(?i)^Microsoft\.VisualStudio\.Component\.Windows(?:10|11)SDK\.(\d+)$`)
 var msvcToolsetRE = regexp.MustCompile(`(?i)^Microsoft\.VC\.(\d+\.\d+\.\d+\.\d+)\.Tools\.Host[^.]+\.Target[^.]+\.base$`)
+var toolsetLineRE = regexp.MustCompile(`^\d+\.\d+$`)
+var sdkVersionRE = regexp.MustCompile(`^10\.0\.(\d+)\.0$`)
 
 func latestPackageMatch(packages []vsPackage, expression *regexp.Regexp) string {
 	best := ""
 	for _, packageInfo := range packages {
 		match := expression.FindStringSubmatch(packageInfo.ID)
 		if len(match) == 2 && (best == "" || compareVersions(match[1], best) > 0) {
+			best = match[1]
+		}
+	}
+	return best
+}
+
+func selectToolset(packages []vsPackage, line string) string {
+	best := ""
+	for _, packageInfo := range packages {
+		match := msvcToolsetRE.FindStringSubmatch(packageInfo.ID)
+		if len(match) != 2 || line != "" && !strings.HasPrefix(match[1], line+".") {
+			continue
+		}
+		if best == "" || compareVersions(match[1], best) > 0 {
 			best = match[1]
 		}
 	}
@@ -456,19 +485,19 @@ func addKitPackages(cat *catalog, options commandOptions, selectors []string) er
 		return nil
 	}
 	build := latestPackageMatch(cat.Manifest.Packages, sdkComponentRE)
+	if match := sdkVersionRE.FindStringSubmatch(options.SDKVersion); len(match) == 2 {
+		build = match[1]
+	}
 	if build == "" {
 		return errors.New("Windows Kit packages require a numeric SDK component")
 	}
 	kitRoot := path.Join("Windows Kits", "10")
-	requests := []kitRequest{{ID: "Microsoft.Windows.SDK.cpp", Target: kitRoot}}
+	var requests []kitRequest
 	for _, target := range options.Targets {
 		sdkID, err := kitID("SDK", target)
 		if err != nil {
 			return err
 		}
-		requests = append(requests, kitRequest{
-			ID: sdkID, Target: path.Join(kitRoot, "Lib", "10.0."+build+".0"), Dependency: "Microsoft.Windows.SDK.cpp",
-		})
 		if needsWDK {
 			wdkID, err := kitID("WDK", target)
 			if err != nil {
@@ -476,7 +505,11 @@ func addKitPackages(cat *catalog, options commandOptions, selectors []string) er
 			}
 			requests = append(requests, kitRequest{ID: wdkID, Target: kitRoot, Dependency: sdkID})
 		}
+		requests = append(requests, kitRequest{
+			ID: sdkID, Target: path.Join(kitRoot, "Lib", "10.0."+build+".0"), Dependency: "Microsoft.Windows.SDK.cpp",
+		})
 	}
+	requests = append(requests, kitRequest{ID: "Microsoft.Windows.SDK.cpp", Target: kitRoot})
 	version := ""
 	for _, request := range requests {
 		request.Build, request.Channel, request.Version = build, options.Channel, version
@@ -530,7 +563,7 @@ type resolver struct {
 func newResolver(cat *catalog, options commandOptions) *resolver {
 	result := &resolver{
 		options: options, byID: map[string][]*vsPackage{},
-		toolset:  latestPackageMatch(cat.Manifest.Packages, msvcToolsetRE),
+		toolset:  selectToolset(cat.Manifest.Packages, options.Toolset),
 		selected: map[string]bool{}, visiting: map[string]bool{},
 	}
 	for index := range cat.Manifest.Packages {
@@ -545,6 +578,9 @@ func (resolverInfo *resolver) alias(value string) ([]string, error) {
 	switch strings.ToLower(value) {
 	case "msvc":
 		if resolverInfo.toolset == "" {
+			if resolverInfo.options.Toolset != "" {
+				return nil, fmt.Errorf("MSVC toolset %s was not found in the selected catalog", resolverInfo.options.Toolset)
+			}
 			return nil, errors.New("no MSVC toolset found")
 		}
 		prefix := "Microsoft.VC." + resolverInfo.toolset
@@ -859,8 +895,12 @@ type installLock struct {
 	Format     int         `json:"format"`
 	Complete   bool        `json:"complete"`
 	Roots      []string    `json:"roots"`
+	VS         string      `json:"vs"`
+	Channel    string      `json:"channel"`
 	Host       string      `json:"host"`
 	Targets    []string    `json:"targets"`
+	Toolset    string      `json:"toolset,omitempty"`
+	SDKVersion string      `json:"sdkVersion,omitempty"`
 	ChannelURL string      `json:"channelUrl,omitempty"`
 	Packages   []vsPackage `json:"packages"`
 }
@@ -947,7 +987,7 @@ func runInstall(args []string) error {
 			return fmt.Errorf("install %s: %w", packageInfo.ID, err)
 		}
 	}
-	if err := writeEnvironmentScripts(dest, options.Resolve.Host, options.Resolve.Targets); err != nil {
+	if err := writeEnvironmentScripts(dest, options.Resolve); err != nil {
 		return err
 	}
 	if err := writeLock(lockFile, selectors, cat, resolved, options.Resolve); err != nil {
@@ -971,7 +1011,9 @@ func readLock(name string, roots []string, options commandOptions) (*catalog, []
 	}
 	equal := func(left, right string) bool { return strings.EqualFold(left, right) }
 	if lock.Format != 2 || !lock.Complete || !slices.EqualFunc(lock.Roots, roots, equal) ||
-		!slices.EqualFunc(lock.Targets, options.Targets, equal) || !equal(lock.Host, options.Host) {
+		!slices.EqualFunc(lock.Targets, options.Targets, equal) || !equal(lock.Host, options.Host) ||
+		!equal(lock.VS, options.VS) || !equal(lock.Channel, options.Channel) ||
+		!equal(lock.Toolset, options.Toolset) || !equal(lock.SDKVersion, options.SDKVersion) {
 		return nil, nil, false, fmt.Errorf("lock %s does not match this request; use --update-lock", name)
 	}
 	resolved := make([]*vsPackage, len(lock.Packages))
@@ -983,8 +1025,10 @@ func readLock(name string, roots []string, options commandOptions) (*catalog, []
 }
 
 func writeLock(name string, roots []string, cat *catalog, resolved []*vsPackage, options commandOptions) error {
-	lock := installLock{Format: 2, Complete: true, Roots: slices.Clone(roots), Host: options.Host,
-		Targets: slices.Clone(options.Targets), ChannelURL: cat.ChannelURL}
+	lock := installLock{Format: 2, Complete: true, Roots: slices.Clone(roots), VS: options.VS,
+		Channel: options.Channel, Host: options.Host,
+		Targets: slices.Clone(options.Targets), Toolset: options.Toolset, SDKVersion: options.SDKVersion,
+		ChannelURL: cat.ChannelURL}
 	for _, packageInfo := range resolved {
 		lock.Packages = append(lock.Packages, *packageInfo)
 	}
@@ -1227,14 +1271,15 @@ call "%~dp0{{.Name}}"
 exit /b %errorlevel%{{end}}
 {{end}}`))
 
-func newestVersionDirectory(root string) string {
+func newestVersionDirectory(root, prefix string) string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return ""
 	}
 	best := ""
 	for _, entry := range entries {
-		if entry.IsDir() && versionDirectoryRE.MatchString(entry.Name()) && compareVersions(entry.Name(), best) > 0 {
+		matchesPrefix := prefix == "" || entry.Name() == prefix || strings.HasPrefix(entry.Name(), prefix+".")
+		if entry.IsDir() && matchesPrefix && versionDirectoryRE.MatchString(entry.Name()) && compareVersions(entry.Name(), best) > 0 {
 			best = entry.Name()
 		}
 	}
@@ -1250,12 +1295,24 @@ func renderBatch(name, templateName string, value any) error {
 	return os.WriteFile(name, []byte(data), 0o644)
 }
 
-func writeEnvironmentScripts(root, host string, targets []string) error {
-	msvc := newestVersionDirectory(filepath.Join(root, "VC", "Tools", "MSVC"))
-	sdk := newestVersionDirectory(filepath.Join(root, "Windows Kits", "10", "bin"))
+func writeEnvironmentScripts(root string, options commandOptions) error {
+	msvcRoot := filepath.Join(root, "VC", "Tools", "MSVC")
+	sdkRoot := filepath.Join(root, "Windows Kits", "10", "bin")
+	msvc := newestVersionDirectory(msvcRoot, options.Toolset)
+	sdk := newestVersionDirectory(sdkRoot, options.SDKVersion)
+	if options.Toolset != "" && msvc == "" {
+		if _, err := os.Stat(msvcRoot); err == nil {
+			return fmt.Errorf("installed MSVC toolset %s was not found", options.Toolset)
+		}
+	}
+	if options.SDKVersion != "" && sdk == "" {
+		if _, err := os.Stat(sdkRoot); err == nil {
+			return fmt.Errorf("installed Windows SDK %s was not found", options.SDKVersion)
+		}
+	}
 	var selected []vcvarsConfiguration
 	for _, configuration := range vcvarsConfigurations {
-		if configuration.Host == host && slices.Contains(targets, configuration.Target) {
+		if configuration.Host == options.Host && slices.Contains(options.Targets, configuration.Target) {
 			selected = append(selected, configuration)
 			if err := renderBatch(filepath.Join(root, configuration.Name), "vcvars", vcvarsData{configuration, msvc, sdk}); err != nil {
 				return err
